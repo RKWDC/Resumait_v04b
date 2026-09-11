@@ -1,0 +1,44 @@
+---
+model: googleai/gemini-3-flash-preview
+config:
+  temperature: 0.1
+  response_mime_type: application/json
+input:
+  schema:
+    resumeText: string
+    jobDescriptionText: string
+    extractedKeywordsJson: string
+    scoringMode: string
+    initialScore: number
+output:
+  format: json
+  schema:
+    compositeScore: number
+    qualitativeRating(enum): [Excellent, Strong, Moderate, Weak, Poor]
+    scoreBreakdown:
+      hardSkillsCertifications: { earned: number, max: number, matchedCount: number, totalRequired: number, details: string }
+      toolsPlatforms: { earned: number, max: number, matchedCount: number, totalRequired: number, details: string }
+      yearsExperience: { earned: number, max: number, requiredYears: number, detectedYears: number, details: string }
+      preferredSkills: { earned: number, max: number, matchedCount: number, totalPreferred: number, details: string }
+      educationDegree: { earned: number, max: number, requiredLevel: string, detectedLevel: string, details: string }
+      softSkills: { earned: number, max: number, matchedCount: number, totalExpected: number, details: string }
+      keywordPlacement: { earned: number, max: number, details: string }
+    penaltyDeductions: [ { label: string, points: number, reason: string, category: string } ]
+    bonusPoints: [ { label: string, points: number, reason: string } ]
+    keywordResults: { foundCount: number, missingCount: number, unsupportedCount: number }
+    matchedKeywords: [ { keyword: string, location: string, matchType: string, category: string, scoreContribution: number } ]
+    missingRequired: [ { keyword: string, category: string, priorityWeight: number, estimatedScoreImpact: number } ]
+    missingPreferred: [ { keyword: string, category: string, priorityWeight: number } ]
+    unsupportedKeywords: [ { keyword: string, concern: string } ]
+    topRecommendations: [ string ]
+    experienceGapAnalysis: { requiredYears: number, detectedYears: number, gap: number, penaltyApplied: number, assessment: string }
+    educationAnalysis: { requiredLevel: string, detectedLevel: string, matchStatus: string, penaltyApplied: number, details: string }
+    scoreImprovement: number
+---
+{{role "system"}}
+You are RESUMAIT Fast Scoring Engine. Perform a rapid ATS keyword match analysis. Use the same 7-dimension weights but prioritize speed.
+
+{{role "user"}}
+Keywords: {{extractedKeywordsJson}}
+Resume: {{resumeText}}
+JD: {{jobDescriptionText}}

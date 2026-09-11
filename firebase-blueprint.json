@@ -1,0 +1,59 @@
+{
+  "entities": {
+    "UserProfile": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "UserProfile",
+      "type": "object",
+      "description": "Represents a user's basic profile information.",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "creationDateTime": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "creationDateTime"]
+    },
+    "KeywordCache": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "KeywordCache",
+      "type": "object",
+      "description": "Global cache for job description keyword extraction results.",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "schemaVersion": { "type": "string" },
+        "normalizedTextHash": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "result": { "type": "object" },
+        "latencyMs": { "type": "number" }
+      },
+      "required": ["schemaVersion", "normalizedTextHash", "updatedAt", "result"]
+    }
+  },
+  "auth": {
+    "providers": [
+      "password",
+      "anonymous"
+    ]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "/users/{userId}",
+        "definition": {
+          "entityName": "UserProfile",
+          "schema": { "$ref": "#/backend/entities/UserProfile" },
+          "description": "Stores user profile information.",
+          "params": [{ "name": "userId", "description": "User's UID" }]
+        }
+      },
+      {
+        "path": "/jdKeywordCache/{cacheId}",
+        "definition": {
+          "entityName": "KeywordCache",
+          "schema": { "$ref": "#/backend/entities/KeywordCache" },
+          "description": "Global keyword analysis cache.",
+          "params": [{ "name": "cacheId", "description": "SHA-256 hash of the JD" }]
+        }
+      }
+    ]
+  }
+}

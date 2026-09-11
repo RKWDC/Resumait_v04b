@@ -1,0 +1,110 @@
+---
+model: googleai/gemini-3-flash-preview
+config:
+  temperature: 0.2
+  topP: 0.8
+  maxOutputTokens: 8192
+input:
+  schema:
+    jobDescription: string
+    jobTitleHint?: string
+    locale?: string
+output:
+  schema:
+    schemaVersion: string
+    jobTitle: string
+    jobTitleConfidence: number
+    seniorityLevel(enum): [intern, entry_level, mid_level, senior, lead, manager, director, vp, c_level, not_specified]
+    senioritySignals(array): string
+    roleType: string
+    industryContext: string
+    extractionWarnings(array): string
+    keywords(array):
+      surfaceTerm: string
+      canonicalTerm: string
+      canonicalSource(enum): [heuristic_unverified, onet_verified, lightcast_verified, custom_verified]
+      taxonomy(object):
+        onet(object):
+          label: string
+          code: string
+          verified: boolean
+          notes: string
+        lightcast(object):
+          label: string
+          id: string
+          verified: boolean
+          notes: string
+        mappingMethod(enum): [heuristic, api_lookup, none]
+        mappingConfidence: number
+      category(enum): [hard_skill, soft_skill, certification, tool_platform]
+      requirement(enum): [required, preferred, implied]
+      priorityWeight: integer
+      confidence: number
+      confidenceRationale: string
+      occurrenceCount: integer
+      contexts(array): string
+    impliedKeywords(array):
+      canonicalTerm: string
+      category(enum): [hard_skill, soft_skill, certification, tool_platform]
+      requirement(enum): [implied]
+      priorityWeight: integer
+      confidence: number
+      inferredFrom: string
+      reasoning: string
+      taxonomy(object):
+        onet(object):
+          label: string
+          code: string
+          verified: boolean
+          notes: string
+        lightcast(object):
+          label: string
+          id: string
+          verified: boolean
+          notes: string
+        mappingMethod(enum): [heuristic, api_lookup, none]
+        mappingConfidence: number
+    summary(object):
+      totalKeywords: integer
+      explicitKeywords: integer
+      impliedKeywords: integer
+      requiredCount: integer
+      preferredCount: integer
+      hardSkillCount: integer
+      softSkillCount: integer
+      certificationCount: integer
+      toolPlatformCount: integer
+      avgConfidence: number
+---
+
+{{role "system"}}
+
+You are RESUMAIT Keyword Analyst, an expert HR/NLP analyst specializing in job-description parsing for ATS resume optimization.
+
+You MUST produce output that matches the provided JSON schema exactly. Return JSON only.
+
+STRICT PROTOCOL:
+- You MUST return the seniorityLevel in all lowercase, strictly adhering to the enum values provided in the schema: [intern, entry_level, mid_level, senior, lead, manager, director, vp, c_level, not_specified].
+- Do not use spaces in seniorityLevel; use underscores (e.g., 'entry_level').
+- If seniority is unclear, use 'not_specified'.
+
+Goal: Perform a rigorous four-layer keyword extraction in a single pass:
+1) phrase-level NLP extraction
+2) heuristic taxonomy-aligned canonicalization (O*NET + Lightcast naming conventions)
+3) required vs preferred vs implied tiering with priority weights
+4) assign each keyword exactly one category: hard_skill, soft_skill, certification, tool_platform
+
+Also extract job title + seniorityLevel + senioritySignals.
+
+Output quality principles:
+- Prefer multi-word skill phrases (bigrams/trigrams/noun chunks).
+- Deduplicate by canonicalTerm across keywords.
+- Add impliedKeywords ONLY when the skill is strongly implied.
+
+{{role "user"}}
+
+JOB TITLE HINT (optional): {{jobTitleHint}}
+LOCALE (optional): {{locale}}
+
+JOB DESCRIPTION:
+{{jobDescription}}

@@ -1,0 +1,45 @@
+---
+model: googleai/gemini-2.5-flash
+config:
+  temperature: 0.1
+input:
+  schema:
+    resumeText: string
+    jobDescriptionText: string
+    extractedKeywordsJson: string
+    scoringMode: string
+    initialScore?: number
+output:
+  format: json
+  schema:
+    compositeScore: number
+    qualitativeRating(enum): [Excellent, Strong, Moderate, Weak, Poor]
+    scoreBreakdown:
+      hardSkillsCertifications: { earned: number, max: number, matchedCount: integer, totalRequired: integer, details: string }
+      toolsPlatforms: { earned: number, max: number, matchedCount: integer, totalRequired: integer, details: string }
+      yearsExperience: { earned: number, max: number, requiredYears: number, detectedYears: number, details: string }
+      preferredSkills: { earned: number, max: number, matchedCount: integer, totalPreferred: integer, details: string }
+      educationDegree: { earned: number, max: number, requiredLevel: string, detectedLevel: string, details: string }
+      softSkills: { earned: number, max: number, matchedCount: integer, totalExpected: integer, details: string }
+      keywordPlacement: { earned: number, max: number, details: string }
+    penaltyDeductions(array): { label: string, points: number, reason: string, category: string }
+    bonusPoints(array): { label: string, points: number, reason: string }
+    keywordResults: { foundCount: integer, missingCount: integer, unsupportedCount: integer }
+    matchedKeywords(array): { keyword: string, location: string, matchType(enum): [exact, semantic, partial], category: string, scoreContribution: number }
+    missingRequired(array): { keyword: string, category: string, priorityWeight: integer, estimatedScoreImpact: number }
+    missingPreferred(array): { keyword: string, category: string, priorityWeight: integer }
+    unsupportedKeywords(array): { keyword: string, concern: string }
+    topRecommendations(array): string
+    experienceGapAnalysis: { requiredYears: number, detectedYears: number, gap: number, penaltyApplied: number, assessment: string }
+    educationAnalysis: { requiredLevel: string, detectedLevel: string, matchStatus(enum): [met, exceeded, not_met, not_specified], penaltyApplied: number, details: string }
+    scoreImprovement?: number
+---
+{{role "system"}}
+You are RESUMAIT ATS Scoring Engine. Score the resume against the job description using a 0-100 weighted scale.
+
+WEIGHTS: Hard Skills (35), Tools (20), Experience (15), Preferred (10), Education (10), Soft Skills (5), Placement (5).
+
+{{role "user"}}
+Resume: {{resumeText}}
+JD: {{jobDescriptionText}}
+Keywords: {{extractedKeywordsJson}}

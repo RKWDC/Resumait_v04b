@@ -1,0 +1,1173 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { Wand2, Loader2, Upload, Check, Sparkles, ArrowUpRight, ChevronDown, Edit3, CheckCircle2, Download, Layout, Zap, BarChart3, Activity, Database, Type, UserCircle, Columns, Target, Circle, XCircle, RotateCcw, FileText, Trash2, HelpCircle } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/hooks/use-toast";
+import { Input } from "./ui/input";
+import { processFile } from "@/lib/file-processor";
+import { cn, stripTrackingMarkers } from "@/lib/utils";
+import React from "react";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { KeywordChecklist } from "./keyword-checklist";
+import { useUser } from "@/firebase";
+import { ScoringProgress, ScoringStep } from "./ScoringProgress";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { downloadResumeAsPdf } from "@/lib/generateResumePdf";
+import { downloadResumeAsDocx, downloadCoverLetterAsDocx } from "@/lib/generateResumeDocx";
+import { injectKeywords } from "@/lib/injectKeywords";
+import { CounselorChat } from "./counselor-chat";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+
+const formSchema = z.object({
+  jobTitle: z.string().min(1, "Job title is required."),
+  jobDescription: z.string().min(100, "Job description must be at least 100 characters."),
+  resume: z.string().min(100, "Resume must be at least 100 characters."),
+});
+
+const SAMPLE_DATA = {
+  resume: `DANIEL HAYES
+Senior Execution Data Scientist | Machine Learning & AI Strategist
+daniel.hayes.ds@email.com | 202-492-0123 | 77 Maiden Lane, San Francisco, CA 94108 | linkedin.com/in/daniel-hayes-ds | github.com/danielhayesds
+
+PROFESSIONAL SUMMARY
+Dynamic Senior Data Scientist with over 10 years of experience in architecting and deploying production-ready machine learning solutions. Expert in Python, SQL, and predictive modeling with a focus on delivering measurable business value. Proven leadership in cross-functional collaboration and AI implementation across finance and retail sectors.
+Target Role: Senior Execution Data Scientist
+
+CORE SKILLS
+Python | SQL | Machine Learning | Predictive Modeling | Statistical Analysis | Data Visualization | AI Strategy | Cross-Functional Collaboration | Stakeholder Management | AWS | SageMaker | PySpark | TensorFlow | NLP | Agile
+
+PROFESSIONAL EXPERIENCE
+SENIOR DATA SCIENTIST | TECH SOLUTIONS CORP
+August 2017 to Present
+• Lead the development of a predictive maintenance model for enterprise clients, resulting in a 22% reduction in downtime and $4M in annual savings.
+• Develop and deploy AI algorithms for customer segmentation, improving marketing ROI by 30%.
+• Manage end-to-end machine learning pipelines from data preparation to production integration on AWS.
+• Consult with executive stakeholders to align AI roadmap with strategic business goals.
+
+DATA SCIENTIST | INNOVATE AI
+January 2013 to July 2017
+• Built sophisticated predictive models for credit risk assessment, reducing default rates by 15% for financial clients.
+• Conducted deep statistical analysis on large-scale datasets to identify high-impact business opportunities.
+• Implemented data visualization dashboards for real-time performance monitoring of AI models.
+
+EDUCATION
+MASTER OF SCIENCE, DATA SCIENCE
+Stanford University | 2012
+
+BACHELOR OF SCIENCE, COMPUTER SCIENCE
+University of California, Berkeley | 2010`,
+  jobTitle: 'Senior Execution Data Scientist',
+  jobDescription: `COMPANY: DataRobot
+Position: Senior Execution Data Scientist
+Location: remote
+
+About DataRobot:
+DataRobot is the leader in Value-Driven AI, a unique and trusted approach to AI that helps organizations accelerate their journey from data to value.
+
+The Role:
+As a Senior Execution Data Scientist, you will be responsible for helping our clients achieve measurable business value from AI. You will work closely with customer stakeholders to identify high-impact use cases and implement end-to-end AI solutions.
+
+Responsibilities:
+- Building predictive models to solve complex business problems across various industries.
+- Developing AI algorithms and deploying machine learning models into production.
+- Preparing data and framing problems for high-value AI applications.
+- Managing models and consuming/visualizing output for executive stakeholders.
+- Building end-to-end AI solutions and consulting with customers.
+- Integrating models into client environments and conducting proof-of-concept and proof-of-value trials.
+- Working on enterprise-grade AI solutions using generative AI and predictive AI.
+- Conducting statistical analysis and data visualization.
+- Cross-functional collaboration and stakeholder management.
+
+Minimum Requirements:
+- 5+ years of experience as a Data Scientist or Machine Learning Engineer.
+- Proficiency in Python and SQL.
+- Experience building and implementing machine learning or AI models into production.
+- Strong knowledge of statistical analysis and data visualization.
+- Experience consulting with customers and managing stakeholders.
+- Bachelor's degree in Computer Science, Statistics, or a related field.
+
+Preferred Qualifications:
+- Master's degree in a quantitative field.
+- Experience with Spark, Snowflake, AWS, or Azure.
+- Familiarity with DataRobot or other AI platforms.
+- Experience with generative AI and LLMs.`
+};
+
+type AnalysisState = {
+    foundKeywords: string[];
+    supportedKeywords: string[];
+    unsupportedKeywords: string[];
+    matchPercentage: number;
+    fullScore?: any;
+    humanAudit?: {
+      percentage: number;
+      highImpactCount: number;
+      totalBullets: number;
+    };
+    atsPreview?: {
+      legalFirstName: string;
+      legalLastName: string;
+      targetRole: string;
+      latestExp: string;
+      eduParse: string;
+      skillsAutoFill: string[];
+      experienceBlocks: number;
+      contactParsing: 'SUCCESS' | 'FAILED';
+      educationBlock: 'Detected' | 'Missing';
+      keywordHitRate: number;
+    };
+};
+
+interface ResumeOptimizerPageProps {
+  actions: {
+    optimize: (input: any) => Promise<any>;
+    getResumeScore: (input: any) => Promise<any>;
+    getInitialAnalysis: (input: any) => Promise<any>;
+    runNewKeywordExtraction: (jobDescription: string, ownerUid?: string) => Promise<any>;
+    counselorChat: (input: any) => Promise<any>;
+    runSpellCheck: (input: { resumeText: string; keywords: string[] }) => Promise<any>;
+    runGenerateCoverLetter: (input: { resume: string; jobDescription: string }) => Promise<any>;
+  };
+}
+
+const InfoTooltip = ({ text, className }: { text: string; className?: string }) => (
+  <div className={cn("absolute top-4 right-4 group z-30", className)}>
+    <HelpCircle className="h-4 w-4 text-zinc-500 hover:text-zinc-200 transition-colors cursor-help shrink-0" />
+    <div className="hidden group-hover:block absolute right-0 top-6 w-80 p-4 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl text-[11px] font-medium text-zinc-100 leading-relaxed animate-in fade-in zoom-in duration-200 z-50 whitespace-normal break-words">
+      {text}
+    </div>
+  </div>
+);
+
+export default function ResumeOptimizerPage({ actions }: ResumeOptimizerPageProps) {
+  const [mounted, setMounted] = useState(false);
+  const [result, setResult] = useState<any | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isRescoring, setIsRescoring] = useState(false);
+  const [isPolishing, setIsPolishing] = useState(false);
+  const [isSpellChecking, setIsSpellChecking] = useState(false);
+  const [isSpellChecked, setIsSpellChecked] = useState(false);
+  const [isGeneratingCoverLetter, setIsGeneratingCoverLetter] = useState(false);
+  
+  const [optimizedResumeText, setOptimizedResumeText] = useState("");
+  const [previousText, setPreviousText] = useState("");
+  const [analysis, setAnalysis] = useState<AnalysisState | null>(null);
+  const [keywordData, setKeywordData] = useState<any>(null);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editText, setEditText] = useState("");
+  const [showComparison, setShowComparison] = useState(false);
+  
+  const [resumeInputType, setResumeInputType] = useState<'paste' | 'upload'>('paste');
+  const [extractionProgress, setExtractionProgress] = useState<Array<{ taskNumber: number; label: string; status: string }>>([]);
+  const [scoringSteps, setScoringSteps] = useState<ScoringStep[]>([
+    { number: 1, label: 'Requirement Vector Audit . . . ', status: 'idle' },
+    { number: 2, label: 'Title Alignment Pass . . . ', status: 'idle' },
+    { number: 3, label: 'Experience Weighting . . . ', status: 'idle' },
+    { number: 4, label: 'Formatting Compliance . . . ', status: 'idle' },
+  ]);
+
+  const [atsSystem, setAtsSystem] = useState<'auto' | 'icims' | 'workday'>('auto');
+  const [showScoreUpdatedBadge, setShowScoreUpdatedBadge] = useState(false);
+
+  const { toast } = useToast();
+  const { user } = useUser();
+  const form = useForm<z.infer<typeof formSchema>>({
+    resolver: zodResolver(formSchema),
+    defaultValues: { resume: "", jobDescription: "", jobTitle: "" },
+  });
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const handleAutoFill = useCallback(() => {
+    form.setValue('resume', SAMPLE_DATA.resume);
+    form.setValue('jobTitle', SAMPLE_DATA.jobTitle);
+    form.setValue('jobDescription', SAMPLE_DATA.jobDescription);
+    setResumeInputType('paste');
+    toast({ title: "Dev Mode: Auto-Fill", description: "Sample data loaded." });
+  }, [form, toast]);
+
+  useEffect(() => {
+    const handler = () => handleAutoFill();
+    window.addEventListener('dev-auto-fill', handler);
+    return () => window.removeEventListener('dev-auto-fill', handler);
+  }, [handleAutoFill]);
+
+  const resumeValue = form.watch('resume');
+  const jobTitleValue = form.watch('jobTitle');
+  const jobTitleValueRef = useRef(jobTitleValue);
+  const jobDescValue = form.watch('jobDescription');
+
+  useEffect(() => {
+    jobTitleValueRef.current = jobTitleValue;
+  }, [jobTitleValue]);
+
+  const isStep1Complete = resumeValue.length > 100;
+  const isStep2Complete = isStep1Complete && jobTitleValue.length > 1 && jobDescValue.length > 100;
+  const isStep3Complete = isStep2Complete && keywordData;
+  const isStep4Complete = !!analysis;
+
+  const refreshAllScores = useCallback(async (text: string) => {
+    if (!keywordData) return;
+    setIsRescoring(true);
+    try {
+        const cleanText = stripTrackingMarkers(text);
+        
+        // Header info check
+        const headerCheckLimit = Math.min(cleanText.length, 1000);
+        const headerContent = cleanText.substring(0, headerCheckLimit);
+        const hasEmail = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.test(cleanText);
+        const hasPhone = /(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(cleanText);
+        const hasContactInHeader = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.test(headerContent) || /(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/.test(headerContent);
+        
+        // EXCESSIVE BULLET LENGTH: ONLY check individual bullets in Experience section
+        const expMatchForParagraphs = cleanText.match(/(?:^|\n)(PROFESSIONAL EXPERIENCE|WORK EXPERIENCE|EXPERIENCE|WORK HISTORY|EMPLOYMENT|WORK EXPERIENCE)([\s\S]*?)(?=EDUCATION|ACADEMIC|CORE SKILLS|SKILLS|LANGUAGES|CERTIFICATIONS|SUMMARY|PROFESSIONAL SUMMARY|PROFILE|EXECUTIVE SUMMARY|$)/i);
+        let hasLongBullet = false;
+
+        if (expMatchForParagraphs) {
+          const experienceTextOnly = expMatchForParagraphs[2].trim();
+          const bulletStart = /^[•\-*·●▪◦○\u2022\u2023\u25E6\u25A0\u25AA\u00B7\u2212+>]|^\d+[\.\)]/;
+          const lines = experienceTextOnly.split('\n');
+          hasLongBullet = lines.some(line => {
+            const trimmed = line.trim();
+            if (trimmed.length < 20) return false;
+            const isBullet = bulletStart.test(trimmed);
+            const wordCount = trimmed.split(/\s+/).length;
+            // Only trigger if block is > 40 words AND it is a bulleted line
+            return wordCount > 40 && isBullet;
+          });
+        }
+
+        // HARDENED: 'Impact Rating' - Role-by-Role math
+        let rolesWithMetrics = 0;
+        let totalRolesCount = 0;
+
+        if (expMatchForParagraphs) {
+          const expText = expMatchForParagraphs[2].trim();
+          const lines = expText.split('\n').filter(l => l.trim().length > 0);
+          const bulletStart = /^[•\-*·●▪◦○\u2022\u2023\u25E6\u25A0\u25AA\u00B7\u2212+>]|^\d+[\.\)]/;
+          const metricRegex = /\d+(?!\d{3})|%|\$|#|\+/;
+
+          const roles: { bullets: string[] }[] = [];
+          let currentBullets: string[] = [];
+
+          lines.forEach(line => {
+            if (bulletStart.test(line)) {
+              currentBullets.push(line);
+            } else {
+              if (currentBullets.length > 0) {
+                roles.push({ bullets: [...currentBullets] });
+                currentBullets = [];
+              }
+            }
+          });
+          if (currentBullets.length > 0) roles.push({ bullets: currentBullets });
+
+          totalRolesCount = roles.length;
+          rolesWithMetrics = roles.filter(r => r.bullets.some(b => metricRegex.test(b))).length;
+        }
+        const newImpactScore = totalRolesCount > 0 ? Math.round((rolesWithMetrics / totalRolesCount) * 100) : 0;
+
+        const response = await actions.getInitialAnalysis({
+            resume: cleanText,
+            jobDescription: jobDescValue,
+            extractedKeywordsJson: JSON.stringify(keywordData),
+            userId: user?.uid,
+            jobTitle: jobTitleValueRef.current
+        });
+
+        if (response.success && response.data) {
+            const data = response.data;
+            
+            const updatedPenalties = (data.fullScore.penalties || []).filter((p: any) => 
+              (p.label === 'EXCESSIVE BULLET LENGTH' && hasLongBullet) ||
+              (p.label === 'CONTACT ACCESSIBILITY' && (!hasEmail || !hasPhone || !hasContactInHeader)) ||
+              (p.label !== 'EXCESSIVE BULLET LENGTH' && p.label !== 'CONTACT ACCESSIBILITY')
+            );
+
+            setAnalysis({
+                foundKeywords: data.foundKeywords,
+                supportedKeywords: data.supportedKeywords,
+                unsupportedKeywords: data.unsupportedKeywords,
+                matchPercentage: data.matchPercentage,
+                fullScore: {
+                  ...data.fullScore,
+                  penalties: updatedPenalties
+                },
+                humanAudit: {
+                  percentage: newImpactScore,
+                  highImpactCount: rolesWithMetrics,
+                  totalBullets: totalRolesCount
+                },
+                atsPreview: {
+                  ...data.atsPreview,
+                  contactParsing: (hasEmail && hasPhone && hasContactInHeader) ? 'SUCCESS' : 'FAILED',
+                  experienceBlocks: totalRolesCount,
+                  educationBlock: (cleanText.toUpperCase().includes('EDUCATION') || cleanText.toUpperCase().includes('ACADEMIC')) ? 'Detected' : 'Missing',
+                  keywordHitRate: Math.round((data.foundKeywords.length / Math.max(1, data.foundKeywords.length + data.supportedKeywords.length + data.unsupportedKeywords.length)) * 100)
+                }
+            });
+            setShowScoreUpdatedBadge(true);
+            setTimeout(() => setShowScoreUpdatedBadge(false), 2000);
+        }
+    } catch (err: any) {
+        console.error('Rescoring error:', err);
+    } finally {
+        setIsRescoring(false);
+    }
+  }, [jobDescValue, keywordData, user?.uid, actions]);
+
+  const rescoreTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  useEffect(() => {
+    if (optimizedResumeText) {
+      if (rescoreTimerRef.current) clearTimeout(rescoreTimerRef.current);
+      rescoreTimerRef.current = setTimeout(() => {
+        refreshAllScores(optimizedResumeText);
+      }, 500);
+    }
+    return () => { if (rescoreTimerRef.current) clearTimeout(rescoreTimerRef.current); };
+  }, [optimizedResumeText, refreshAllScores]);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsLoading(true);
+    try {
+      const result = await processFile(file);
+      if (result.extractionStatus === 'success' && result.extractedText) {
+        form.setValue('resume', result.extractedText);
+        toast({ title: "File Uploaded", description: "Text extracted successfully." });
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleExtractKeywords = async () => {
+    if (!isStep2Complete) return;
+    setIsExtracting(true);
+    setExtractionProgress([
+      { taskNumber: 1, label: 'Schema Extraction . . . ', status: 'pending' },
+      { taskNumber: 2, label: 'Consolidating Synonyms . . . ', status: 'pending' },
+      { taskNumber: 3, label: 'Identifying OR Groups . . . ', status: 'pending' },
+    ]);
+    setAnalysis(null); 
+
+    try {
+      const response = await actions.runNewKeywordExtraction(jobDescValue, user?.uid);
+      if (response.success && response.data) {
+        setExtractionProgress(prev => prev.map(p => ({ ...p, status: 'complete' })));
+        setKeywordData(response.data);
+        toast({ title: "Requirements Extracted", description: `Weighted schema built.` });
+        setTimeout(() => { setIsExtracting(false); setExtractionProgress([]); }, 1500);
+      } else {
+        setIsExtracting(false);
+        toast({ variant: 'destructive', title: "Extraction Failed", description: response.error || "AI pipeline failure." });
+      }
+    } catch (err: any) {
+      setIsExtracting(false);
+      toast({ variant: 'destructive', title: "Unexpected Error", description: "The extraction engine encountered an error." });
+    }
+  };
+
+  const handleInitialMatch = async () => {
+    if (!isStep3Complete || !keywordData) return;
+    setIsAnalyzing(true);
+    setScoringSteps(prev => prev.map(s => ({ ...s, status: s.number === 1 ? 'running' : 'idle' })));
+
+    try {
+      const response = await actions.getInitialAnalysis({
+        resume: stripTrackingMarkers(resumeValue),
+        jobDescription: jobDescValue,
+        extractedKeywordsJson: JSON.stringify(keywordData),
+        userId: user?.uid,
+        jobTitle: jobTitleValue
+      });
+
+      if (!response.success) {
+        setIsAnalyzing(false);
+        toast({ variant: 'destructive', title: "Audit Failed", description: response.error || "Failed to execute diagnostic pass." });
+        return;
+      }
+
+      const data = response.data;
+      setScoringSteps(prev => prev.map(s => ({ ...s, status: 'complete' })));
+
+      setAnalysis({
+          foundKeywords: data.foundKeywords,
+          supportedKeywords: data.supportedKeywords,
+          unsupportedKeywords: data.unsupportedKeywords,
+          matchPercentage: data.matchPercentage,
+          fullScore: data.fullScore,
+          humanAudit: data.humanAudit,
+          atsPreview: data.atsPreview
+      });
+
+      setTimeout(() => { setIsAnalyzing(false); }, 1500);
+    } catch (err: any) {
+      setIsAnalyzing(false);
+      toast({ variant: 'destructive', title: "Network Error", description: "Unable to reach the diagnostic server." });
+    }
+  };
+
+  const handleUndo = () => {
+    if (!previousText) return;
+    const current = optimizedResumeText;
+    setOptimizedResumeText(previousText);
+    setEditText(previousText);
+    setPreviousText(current); 
+    toast({ title: "Action Reverted", description: "Restored previous state." });
+  };
+
+  const handleIntegrateSupported = async () => {
+    if (!analysis?.supportedKeywords?.length) return;
+    setPreviousText(optimizedResumeText || resumeValue);
+    const currentText = optimizedResumeText || resumeValue;
+    const result = injectKeywords(currentText, analysis.supportedKeywords.map(k => ({
+      keyword: k, category: 'hard_skill'
+    })), 'ADDED_SUPPORTED');
+    setOptimizedResumeText(result.updatedText);
+    setEditText(result.updatedText);
+    setResult(prev => ({ ...(prev || {}), optimizedResumeText: result.updatedText })); 
+    toast({ title: "Experience Integrated", description: "Appended inferred skills to your Professional Experience." });
+  };
+
+  const handleAutoFillMissing = async () => {
+    if (!analysis?.unsupportedKeywords?.length) return;
+    setPreviousText(optimizedResumeText || resumeValue);
+    const currentText = optimizedResumeText || resumeValue;
+    const result = injectKeywords(currentText, analysis.unsupportedKeywords.map(k => ({
+      keyword: k, category: 'hard_skill'
+    })), 'ADDED_UNSUPPORTED');
+    setOptimizedResumeText(result.updatedText);
+    setEditText(result.updatedText);
+    setResult(prev => ({ ...(prev || {}), optimizedResumeText: result.updatedText }));
+    toast({ title: "Skills Auto-Filled", description: "Addressed critical keyword gaps to your Core Skills section." });
+  };
+
+  const handlePolish = async () => {
+    if (!optimizedResumeText) return;
+    setPreviousText(optimizedResumeText);
+    setIsPolishing(true);
+    try {
+      const response = await fetch('/api/polish-resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resumeText: optimizedResumeText,
+          keywords: (keywordData?.hardSkills || []).concat(keywordData?.softSkills || [])
+        }),
+      });
+      const result = await response.json();
+      if (result.success && result.data) {
+        setOptimizedResumeText(result.data.polishedResume);
+        setEditText(result.data.polishedResume);
+        toast({ title: "Resume Polished", description: "Linguistic impact elevated." });
+      }
+    } finally {
+      setIsPolishing(false);
+    }
+  };
+
+  const handleSpellCheck = async () => {
+    if (!optimizedResumeText) return;
+    setPreviousText(optimizedResumeText);
+    setIsSpellChecking(true);
+    try {
+      const response = await actions.runSpellCheck({
+        resumeText: optimizedResumeText,
+        keywords: (keywordData?.hardSkills || []).concat(keywordData?.softSkills || [])
+      });
+      if (response.success && response.data) {
+        setOptimizedResumeText(response.data.correctedResume);
+        setEditText(response.data.correctedResume);
+        setIsSpellChecked(true);
+        setTimeout(() => setIsSpellChecked(false), 2000);
+        toast({ title: "Spell Check Complete", description: `Fixed ${response.data.typoCount} errors. Acronyms (SQL, AWS, NLP) preserved.` });
+      }
+    } finally {
+      setIsSpellChecking(false);
+    }
+  };
+
+  const handleFixLongBullets = () => {
+    setPreviousText(optimizedResumeText || resumeValue);
+    const text = optimizedResumeText || resumeValue;
+    
+    // STRICT: Only isolate the Experience section for bullet splitting
+    const expMatch = text.match(/(?:^|\n)(PROFESSIONAL EXPERIENCE|WORK EXPERIENCE|EXPERIENCE|WORK HISTORY|EMPLOYMENT|WORK EXPERIENCE)([\s\S]*?)(?=EDUCATION|ACADEMIC|CORE SKILLS|SKILLS|LANGUAGES|CERTIFICATIONS|SUMMARY|PROFESSIONAL SUMMARY|PROFILE|EXECUTIVE SUMMARY|$)/i);
+    
+    if (expMatch) {
+      const headerText = expMatch[1];
+      const expContent = expMatch[2];
+      const lines = expContent.split('\n');
+      const bulletStart = /^[•\-*+·●▪◦○\u2022\u2023\u25E6\u25A0\u25AA\u00B7\u2212+>]|^\d+[\.\)]/;
+      
+      const fixedLines = lines.map(line => {
+        const trimmed = line.trim();
+        const words = trimmed.split(/\s+/);
+        const isBullet = bulletStart.test(trimmed);
+        
+        // Only convert to bullets if line > 40 words and IS a bullet
+        if (words.length > 40 && isBullet) {
+          // Remove existing bullet marker to avoid double bullets
+          const cleanLine = trimmed.replace(bulletStart, '').trim();
+          return cleanLine.split(/[.!?]\s+/).map(s => s.trim().length > 0 ? `• ${s.trim()}.` : '').filter(s => s.length > 0).join('\n');
+        }
+        return line;
+      });
+      const fixedContent = fixedLines.join('\n');
+      const newText = text.replace(expContent, fixedContent);
+      setOptimizedResumeText(newText);
+      setEditText(newText);
+      toast({ title: "Bullets Split", description: "Excessively long bullet points in Experience have been divided." });
+    } else {
+      toast({ title: "No Experience Section", description: "Could not locate Experience section for surgical refinement." });
+    }
+  };
+
+  const handleFixLayout = () => {
+    setPreviousText(optimizedResumeText || resumeValue);
+    const text = optimizedResumeText || resumeValue;
+    const fixed = text.replace(/ {3,}/g, '  ');
+    setOptimizedResumeText(fixed);
+    setEditText(fixed);
+    toast({ title: "Layout Cleaned", description: "Invisible ATS-breaking characters and complex tabs removed." });
+  };
+
+  const handleFixContact = () => {
+    const text = optimizedResumeText || resumeValue;
+    
+    setPreviousText(text);
+    const name = (analysis?.atsPreview?.legalFirstName || "CANDIDATE").toUpperCase() + " " + (analysis?.atsPreview?.legalLastName || "").toUpperCase();
+    const headline = (jobTitleValue || "PROFESSIONAL").toUpperCase();
+    const contactLine = `555-0101 | email@example.com | City, State | linkedin.com/in/candidate`;
+    
+    const header = `${name}\n${headline}\n${contactLine}\n\n`;
+    const newText = header + text.replace(/^[A-Z\s]+\n[A-Z\s\|\-]+\n[A-Z0-9\s\|\.\@\-\/]+\n\n/i, '');
+    
+    setOptimizedResumeText(newText);
+    setEditText(newText);
+    toast({ title: "Header Updated", description: "Applied standard 3-line executive format." });
+  };
+
+  async function onOptimize() {
+    setIsLoading(true);
+    setResult(null);
+    setPreviousText("");
+    try {
+      const response = await fetch('/api/optimize-resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resume: resumeValue,
+          jobDescription: jobDescValue,
+          jobTitle: jobTitleValue,
+          extractedKeywordsJson: JSON.stringify(keywordData),
+        }),
+      });
+      
+      const resultData = await response.json();
+      if (resultData.success && resultData.data) {
+        setOptimizedResumeText(resultData.data.optimizedResumeText);
+        setEditText(resultData.data.optimizedResumeText); 
+        setResult(resultData.data);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  const handleGenerateCoverLetter = async () => {
+    if (!optimizedResumeText || !jobDescValue) return;
+    setIsGeneratingCoverLetter(true);
+    toast({ title: "Generating Cover Letter", description: "Drafting high-impact tailored content..." });
+    try {
+      const response = await actions.runGenerateCoverLetter({
+        resume: optimizedResumeText,
+        jobDescription: jobDescValue,
+      });
+      if (response.success && response.data) {
+        await downloadCoverLetterAsDocx(
+          response.data.coverLetter,
+          analysis?.atsPreview?.legalFirstName || 'Candidate',
+          jobTitleValue
+        );
+        toast({ title: "Cover Letter Ready", description: "Downloaded as executive DOCX." });
+      } else {
+        toast({ variant: "destructive", title: "Generation Failed", description: response.error || "AI could not draft the letter." });
+      }
+    } catch (err) {
+      toast({ variant: "destructive", title: "Error", description: "Failed to generate cover letter." });
+    } finally {
+      setIsGeneratingCoverLetter(false);
+    }
+  };
+
+  const handleResetApp = () => {
+    form.reset({ resume: "", jobDescription: "", jobTitle: "" });
+    setResult(null);
+    setOptimizedResumeText("");
+    setPreviousText("");
+    setAnalysis(null);
+    setKeywordData(null);
+    setIsEditMode(false);
+    setShowComparison(false);
+    toast({ title: "App Reset", description: "All inputs and data cleared." });
+  };
+
+  const renderTrackedResume = (text: string) => {
+    if (!text) return null;
+    const markerPattern = /(@@ADDED_SUPPORTED:[^@]+@@|@@ADDED_UNSUPPORTED:[^@]+@@)/g;
+    const parts = text.split(markerPattern);
+    return parts.map((part, i) => {
+      if (part.startsWith('@@ADDED_SUPPORTED:')) {
+        const inner = part.replace('@@ADDED_SUPPORTED:', '').replace('@@', '');
+        const keyword = inner.split(':').pop();
+        return <mark key={i} className="bg-blue-100 text-blue-700 px-1 rounded font-bold">{keyword}</mark>;
+      }
+      if (part.startsWith('@@ADDED_UNSUPPORTED:')) {
+        const inner = part.replace('@@ADDED_UNSUPPORTED:', '').replace('@@', '');
+        const keyword = inner.split(':').pop();
+        return <mark key={i} className="bg-orange-100 text-orange-700 px-1 rounded font-bold">{keyword}</mark>;
+      }
+      return part;
+    });
+  };
+
+  return (
+    <div className="relative min-h-screen">
+      <div className="fixed top-4 right-4 z-[100]">
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="outline" size="sm" className="font-black uppercase text-[10px] tracking-widest border-2 hover:bg-destructive hover:text-white hover:border-destructive transition-all gap-2">
+              <Trash2 className="h-3 w-3" /> RESET
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent className="border-2 rounded-2xl">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="font-black uppercase tracking-tight">Are you sure you want to reset?</AlertDialogTitle>
+              <AlertDialogDescription className="font-medium text-xs">
+                This will clear all your inputs, target job data, and any optimized resumes you have generated. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel className="rounded-xl font-bold text-xs">Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={handleResetApp} className="rounded-xl font-bold text-xs bg-destructive text-white">Reset Application</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+
+      <div className="container mx-auto max-w-7xl py-12">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-16">
+          <div className="space-y-10">
+            <section className="space-y-4">
+              <div className="space-y-1">
+                <h2 className="text-xl font-semibold text-primary tracking-tight flex items-center gap-3">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground text-xs shadow-lg font-black">01</span>
+                  UPLOAD CURRENT RESUME
+                </h2>
+                <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider ml-11">PASTE, TYPE, OR UPLOAD YOUR RESUME BELOW.</p>
+              </div>
+              <Card className="border-2 border-primary/5 hover:border-primary/20 transition-all shadow-sm relative">
+                  <InfoTooltip text="Paste your current resume or upload a file. This text is the foundation for all AI optimizations and keyword analysis." />
+                  <CardContent className="pt-8 space-y-6">
+                      <RadioGroup value={resumeInputType} onValueChange={(v: any) => setResumeInputType(v)} className="flex gap-8 mb-4">
+                          <div className="flex items-center space-x-2"><RadioGroupItem value="paste" id="p"/><Label htmlFor="p" className="text-sm font-bold text-zinc-600 uppercase tracking-wider">RESUME TEXT</Label></div>
+                          <div className="flex items-center space-x-2"><RadioGroupItem value="upload" id="u"/><Label htmlFor="u" className="text-sm font-bold text-zinc-600 uppercase tracking-wider">FILE UPLOAD</Label></div>
+                      </RadioGroup>
+                      {resumeInputType === 'paste' ? (
+                          <Textarea placeholder="Paste resume content here . . . " className="min-h-[200px] font-mono text-sm leading-relaxed border-2" value={resumeValue} onChange={(e) => form.setValue('resume', e.target.value)} />
+                      ) : (
+                          <div className="space-y-4">
+                              <Button asChild variant="outline" className="w-full h-32 border-dashed border-2 flex flex-col gap-3 group">
+                                  <label className="cursor-pointer">
+                                    <Upload className="h-8 w-8 text-muted-foreground group-hover:text-primary transition-colors"/> 
+                                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground">Drop PDF/DOCX or Browse System</span>
+                                    <input type="file" className="hidden" accept=".pdf,.docx" onChange={handleFileChange}/>
+                                  </label>
+                              </Button>
+                          </div>
+                      )}
+                  </CardContent>
+              </Card>
+            </section>
+
+            <section className={`space-y-4 transition-all duration-700 ${!isStep1Complete ? 'opacity-20 pointer-events-none grayscale' : ''}`}>
+              <div className="space-y-1">
+                <h2 className="text-xl font-semibold text-primary tracking-tight flex items-center gap-3">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground text-xs shadow-lg font-black">02</span>
+                  TARGET JOB
+                </h2>
+                <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider ml-11">Share the Relevant Job Details.</p>
+              </div>
+              <Card className="border-2 border-primary/5 hover:border-primary/20 transition-all shadow-sm relative">
+                  <InfoTooltip text="The job description and title provide the context the AI needs to extract critical keywords and align your profile with what recruiters are seeking." />
+                  <CardContent className="pt-8 space-y-6">
+                      <div className="space-y-2">
+                        <Label className="text-sm font-bold text-zinc-600 uppercase tracking-wider">JOB TITLE</Label>
+                        <div className="relative">
+                          <Target className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                          <Input placeholder="e.g. Senior Operations Manager" className="pl-12 h-12 border-2 font-bold" value={jobTitleValue} onChange={e => form.setValue('jobTitle', e.target.value)}/>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-sm font-bold text-zinc-600 uppercase tracking-wider">ATS SYSTEM</Label>
+                        <Select value={atsSystem} onValueChange={(v: any) => setAtsSystem(v)}>
+                          <SelectTrigger className="h-12 border-2 font-bold">
+                            <SelectValue placeholder="Standard (Recommended)" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">Standard (Recommended)</SelectItem>
+                            <SelectItem value="icims">iCIMS (Beta)</SelectItem>
+                            <SelectItem value="workday">Workday Recruiting (Beta)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-sm font-bold text-zinc-600 uppercase tracking-wider">JOB DESCRIPTION</Label>
+                        <Textarea placeholder="Paste job description here . . . " className="min-h-[200px] text-sm leading-relaxed border-2" value={jobDescValue} onChange={e => form.setValue('jobDescription', e.target.value)}/>
+                      </div>
+                  </CardContent>
+              </Card>
+            </section>
+
+            <section className={`space-y-4 transition-all duration-700 ${!isStep2Complete ? 'opacity-20 pointer-events-none grayscale' : ''}`}>
+               <div className="space-y-1">
+                <h2 className="text-xl font-semibold text-primary tracking-tight flex items-center gap-3">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground text-xs shadow-lg font-black">03</span>
+                  ANALYZING TARGET JOB REQUIREMENTS
+                </h2>
+                <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider ml-11">Let Us Build a Job Requirements and Keywords Dashboard for You.</p>
+              </div>
+              <Card className="border-2 border-primary/5 shadow-sm relative">
+                  <InfoTooltip text="This engine extracts technical and soft skills from the job description to build a weighted optimization schema tailored to the role." />
+                  <CardContent className="pt-8 space-y-8">
+                      <Button onClick={handleExtractKeywords} className="w-full h-16 font-black uppercase tracking-widest text-sm shadow-2xl group" disabled={isExtracting}>
+                        {isExtracting ? <Loader2 className="animate-spin mr-3 h-6 w-6"/> : <Zap className="mr-3 h-6 w-6 text-yellow-400 fill-yellow-400 group-hover:scale-125 transition-transform"/>}
+                        ANALYZE JOB REQUIREMENTS
+                      </Button>
+                      
+                      {isExtracting && (
+                        <div className="p-6 bg-muted/20 rounded-2xl border-2 border-dashed border-primary/10 space-y-4 animate-pulse">
+                          <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin"/> Analysis In Progress . . . 
+                          </p>
+                          {extractionProgress.map((p, i) => (
+                            <div key={i} className="flex items-center gap-3 text-xs font-black uppercase tracking-widest text-muted-foreground">
+                              {p.status === 'complete' ? <CheckCircle2 className="h-4 w-4 text-green-600"/> : <Circle className="h-4 w-4 text-muted/30"/>}
+                              {p.label}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {keywordData && !isExtracting && (
+                          <div className="space-y-8">
+                              <div className="space-y-6">
+                                <div className="space-y-3">
+                                  <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider flex items-center gap-2">
+                                    <Database className="h-3 w-3 text-primary" /> HARD SKILLS (Technical)
+                                  </p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {keywordData.hardSkills?.map((kw: string, i: number) => (
+                                      <Badge key={i} variant="secondary" className="px-4 py-1.5 font-bold transition-all border-2 border-primary/10">
+                                        {kw}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div className="space-y-3">
+                                  <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider flex items-center gap-2">
+                                    <UserCircle className="h-3 w-3 text-accent" /> SOFT SKILLS (Interpersonal)
+                                  </p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {keywordData.softSkills?.map((kw: string, i: number) => (
+                                      <Badge key={i} variant="outline" className="px-4 py-1.5 font-bold transition-all border-2 border-accent/20 text-accent">
+                                        {kw}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                          </div>
+                      )}
+                  </CardContent>
+              </Card>
+            </section>
+
+            <section className={`space-y-4 transition-all duration-700 ${!isStep3Complete ? 'opacity-20 pointer-events-none grayscale' : ''}`}>
+               <div className="space-y-1">
+                <h2 className="text-xl font-semibold text-primary tracking-tight flex items-center gap-3">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground text-xs shadow-lg font-black">04</span>
+                  ATS MATCH SCORE
+                </h2>
+                <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider ml-11">Multi-factor score calculation.</p>
+              </div>
+              <div className="relative">
+                  <Button variant="outline" onClick={handleInitialMatch} disabled={isAnalyzing || isLoading || !isStep3Complete} className="w-full h-auto py-10 flex-col gap-4 border-2 border-primary/10 hover:border-primary transition-all shadow-xl group bg-background/50 backdrop-blur-sm relative overflow-hidden">
+                      <div className="absolute top-4 right-4 z-30">
+                        <InfoTooltip text="The weighted scoring engine audits your resume against the extracted requirements, evaluating keyword placement, title alignment, and formatting." />
+                      </div>
+                      {isAnalyzing ? <Loader2 className="animate-spin h-10 w-10 text-primary"/> : <BarChart3 className="h-10 w-10 text-primary group-hover:scale-110 transition-transform"/>}
+                      <div className="text-center">
+                        <p className="font-black text-xl uppercase tracking-widest text-primary">CALCULATE MY MATCH SCORE</p>
+                        <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider mt-1">WEIGHTED MULTI-FACTOR ENGINE</p>
+                      </div>
+                  </Button>
+                  {isAnalyzing && (
+                    <div className="mt-8">
+                      <ScoringProgress steps={scoringSteps} currentStep={scoringSteps.findIndex(s => s.status === 'running') + 1} isVisible={true} />
+                    </div>
+                  )}
+              </div>
+            </section>
+
+            {isStep4Complete && (
+              <section className={`space-y-4 animate-in slide-in-from-bottom-8 duration-700`}>
+                <div className="space-y-1">
+                  <h1 className="text-xl font-semibold text-primary tracking-tight flex items-center gap-3">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground text-xs shadow-lg font-black">05</span>
+                    REWRITE YOUR RESUME
+                  </h1>
+                  <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider ml-11">Pass ATS Filters and Impress Hiring Managers.</p>
+                </div>
+                <Card className="border-4 border-primary/20 bg-primary/5 shadow-2xl group relative">
+                  <InfoTooltip text="The AI optimization engine performs a structural overhaul of your resume, ensuring high-impact delivery and strict adherence to executive ATS standards." />
+                  <CardContent className="pt-12 px-10 pb-12">
+                    <Button onClick={onOptimize} className="w-full py-10 font-black uppercase tracking-tighter group h-auto shadow-2xl relative overflow-hidden" disabled={isLoading}>
+                      <div className="absolute inset-0 bg-gradient-to-r from-primary via-accent to-primary opacity-20 group-hover:animate-pulse"/>
+                      {isLoading ? <Loader2 className="animate-spin mr-4 h-8 w-8" /> : <Sparkles className="mr-4 h-8 w-8 group-hover:rotate-12 transition-transform" />}
+                      <span className="relative z-10 text-sm md:text-base">REWRITE YOUR RESUME WITH AI</span>
+                    </Button>
+                  </CardContent>
+                </Card>
+              </section>
+            )}
+          </div>
+
+          <div className="lg:sticky lg:top-8 space-y-8">
+              {analysis && (
+                  <>
+                      <Card className={cn(
+                        "bg-background relative border-2 border-primary/10 shadow-2xl transition-all duration-500",
+                        isRescoring ? "ring-4 ring-cyan-400/30 border-cyan-400 shadow-[0_0_30px_rgba(6,182,212,0.2)]" : ""
+                      )}>
+                          <InfoTooltip text="This report identifies structural and formatting issues that could cause your resume to be rejected by standard ATS parsers." />
+                          {isRescoring ? (
+                              <div className="flex flex-col items-center justify-center py-24 bg-muted/5 animate-pulse">
+                                <Loader2 className="h-20 w-20 animate-spin text-cyan-400 mb-6" />
+                                <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider">Recalculating Match Score . . . </p>
+                              </div>
+                          ) : (
+                              <div className="text-center py-12 relative bg-background border-b shadow-inner">
+                                  <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider mb-2">YOUR ATS SCORE</p>
+                                  <div className={cn(
+                                      "text-9xl font-black tracking-tighter transition-all duration-500",
+                                      showScoreUpdatedBadge ? "animate-score-pulse text-primary" : "",
+                                      analysis.matchPercentage >= 75 ? 'text-green-600' : analysis.matchPercentage >= 60 ? 'text-orange-600' : 'text-red-600'
+                                  )}>
+                                    {analysis.matchPercentage}%
+                                  </div>
+                                  <div className="mt-2 text-sm font-bold text-zinc-600 uppercase tracking-wider opacity-40">
+                                  </div>
+                                  <div className="flex items-center justify-center gap-2 mt-6">
+                                    <Badge variant="outline" className="font-black border-2 border-primary/20 bg-background px-8 py-2 text-sm uppercase tracking-widest shadow-lg flex items-center gap-2">
+                                      <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                                      {analysis.fullScore?.qualitativeRating} Alignment
+                                    </Badge>
+                                  </div>
+                              </div>
+                          )}
+                          <CardHeader className="pt-8 px-10">
+                              <CardTitle className="text-xl font-semibold text-primary tracking-tight flex justify-between items-center">
+                                  <span className="flex items-center gap-2"><CheckCircle2 className="h-5 w-5 text-primary"/> ATS COMPLIANCE REPORT</span>
+                              </CardTitle>
+                          </CardHeader>
+                          <CardContent className="px-10 pb-10 space-y-6">
+                              {analysis.fullScore?.topRecommendations && analysis.fullScore.topRecommendations.map((rec: string, i: number) => (
+                                <div key={i} className="flex items-start gap-4 p-5 bg-muted/20 rounded-2xl border-2 border-transparent hover:border-primary/10 transition-all group shadow-sm">
+                                  <div className="bg-primary/10 p-2 rounded-xl group-hover:bg-primary group-hover:text-white transition-colors">
+                                    <ArrowUpRight className="h-5 w-5"/>
+                                  </div>
+                                  <p className="text-sm font-bold text-muted-foreground leading-relaxed group-hover:text-foreground transition-colors">{rec}</p>
+                                </div>
+                              ))}
+                          </CardContent>
+                      </Card>
+
+                      <Card className="border-2 border-primary/10 shadow-xl animate-in fade-in slide-in-from-bottom-4 duration-500 relative bg-background">
+                        <InfoTooltip text="This audit simulates how a human recruiter evaluates the impact of your experience based on quantifiable achievements and metrics." />
+                        <CardHeader className="bg-muted/30 border-b py-4">
+                          <CardTitle className="text-xl font-semibold text-primary tracking-tight flex items-center gap-2">
+                            <Activity className="h-4 w-4 text-primary" /> RECRUITER AUDIT
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="p-6 space-y-4">
+                          <div className="flex items-center justify-between">
+                            <div className="space-y-1">
+                              <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider">Impact Rating</p>
+                              <p className={cn(
+                                "text-sm font-black uppercase",
+                                (analysis?.humanAudit?.percentage ?? 0) >= 30 ? "text-green-600" : "text-red-600"
+                              )}>
+                                {(analysis?.humanAudit?.percentage ?? 0) >= 30 ? "✅ RESULT-ORIENTED" : "TASK-HEAVY . . ."}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-2xl font-black tabular-nums text-primary">{Math.round(analysis?.humanAudit?.percentage ?? 0)}%</p>
+                              <p className="text-sm font-bold text-zinc-600 uppercase tracking-wider">Roles with Results</p>
+                            </div>
+                          </div>
+                          <div className="p-4 bg-muted/20 rounded-xl border border-primary/5">
+                            <p className="text-xs font-bold leading-relaxed text-zinc-700">
+                              {(analysis?.humanAudit?.percentage ?? 0) >= 30 
+                                ? "Great job! Most of your roles demonstrate quantifiable results."
+                                : "Your resume is 'Task-Heavy . . . ' Try adding at least one specific number or percentage to every role to demonstrate your impact."
+                              }
+                            </p>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="border-2 border-primary/10 shadow-xl animate-in fade-in slide-in-from-bottom-4 duration-700 relative bg-background">
+                        <InfoTooltip text="This view simulates how a modern 1-click apply system extracts and parses your data. High hit rates ensure your profile is searchable." />
+                        <CardHeader className="bg-primary/5 border-b py-4">
+                          <CardTitle className="text-xl font-semibold text-primary tracking-tight flex items-center gap-2">
+                            <Database className="h-4 w-4 text-primary" /> WORKDAY PARSING PREVIEW
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="p-6 bg-zinc-900 text-zinc-100 font-mono text-[10px] leading-relaxed">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+                            <div className="space-y-4">
+                              <div className="flex flex-col">
+                                <span className="text-zinc-400 font-black uppercase text-[8px] mb-1">LEGAL NAME:</span>
+                                <span className="text-white font-bold">{analysis?.atsPreview?.legalFirstName} {analysis?.atsPreview?.legalLastName}</span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-zinc-400 font-black uppercase text-[8px] mb-1">TARGET ROLE:</span>
+                                <span className="text-white font-bold">{analysis?.atsPreview?.targetRole}</span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-zinc-400 font-black uppercase text-[8px] mb-1">CONTACT PARSING:</span>
+                                <span className={cn("font-bold flex items-center gap-2", analysis?.atsPreview?.contactParsing === 'SUCCESS' ? 'text-green-400' : 'text-red-400')}>
+                                  {analysis?.atsPreview?.contactParsing === 'SUCCESS' ? <CheckCircle2 className="h-3 w-3"/> : <XCircle className="h-3 w-3"/>}
+                                  {analysis?.atsPreview?.contactParsing}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="space-y-4">
+                              <div className="flex flex-col">
+                                <span className="text-zinc-400 font-black uppercase text-[8px] mb-1">EXPERIENCE BLOCKS DETECTED:</span>
+                                <span className="text-white font-bold">[{analysis?.atsPreview?.experienceBlocks}] DETECTED</span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-zinc-400 font-black uppercase text-[8px] mb-1">EDUCATION BLOCK:</span>
+                                <span className={cn("font-bold flex items-center gap-2", analysis?.atsPreview?.educationBlock === 'Detected' ? 'text-green-400' : 'text-red-400')}>
+                                  {analysis?.atsPreview?.educationBlock === 'Detected' ? <CheckCircle2 className="h-3 w-3"/> : <XCircle className="h-3 w-3"/>}
+                                  {analysis?.atsPreview?.educationBlock}
+                                </span>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-zinc-400 font-black uppercase text-[8px] mb-1">KEYWORD HIT RATE:</span>
+                                <span className="text-primary font-black text-lg">{analysis?.atsPreview?.keywordHitRate}%</span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mt-6 space-y-1">
+                            <span className="text-zinc-400 font-black uppercase text-[8px]">SKILLS AUTO-FILL PREVIEW:</span>
+                            <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-1 border border-white/5 p-3 rounded bg-zinc-800/50">
+                              {analysis?.atsPreview?.skillsAutoFill?.map((skill, i) => (
+                                <div key={i} className="flex items-center gap-2 text-zinc-300 text-[9px]">
+                                  <div className="h-1 w-1 bg-primary rounded-full" />
+                                  {skill}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="mt-6 pt-4 border-t border-white/5 italic text-[9px] text-zinc-500 leading-relaxed uppercase tracking-tighter">
+                            This view simulates how a Workday recruiter sees your data during the '1-Click Apply' autofill process. Ensure all blocks are detected correctly.
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {result && (
+                          <Card className="border-4 border-primary/10 shadow-2xl relative bg-background">
+                              <InfoTooltip text="Your finalized, machine-readable resume. Use the manual and AI tools below to refine the narrative and layout." />
+                              <CardHeader className="flex-row items-center justify-between py-6 px-10 border-b bg-muted/10">
+                                  <CardTitle className="text-xl font-semibold text-primary tracking-tight flex items-center gap-3">
+                                    <Columns className="h-5 w-5 text-primary"/> YOUR OPTIMIZED RESUME
+                                  </CardTitle>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Button 
+                                      size="sm" 
+                                      variant="outline" 
+                                      onClick={handleUndo}
+                                      disabled={!previousText}
+                                      className="h-9 font-black uppercase text-[10px] tracking-widest px-4 border-2 transition-all hover:border-primary"
+                                    >
+                                      <RotateCcw className="h-4 w-4 mr-2"/> UNDO
+                                    </Button>
+                                    <Button 
+                                      size="sm" 
+                                      variant="outline" 
+                                      onClick={() => setShowComparison(!showComparison)}
+                                      className={cn("h-9 font-black uppercase text-[10px] tracking-widest px-4 border-2 transition-all", showComparison ? "bg-primary text-primary-foreground" : "hover:border-primary")}
+                                    >
+                                      <Layout className="h-4 w-4 mr-2"/>
+                                      {showComparison ? "CLOSE COMPARISON" : "COMPARE ORIGINAL"}
+                                    </Button>
+                                  </div>
+                              </CardHeader>
+                              <CardContent className="pt-0 px-0">
+                                  <div className={cn(
+                                      "grid transition-all duration-500",
+                                      showComparison ? "grid-cols-2" : "grid-cols-1"
+                                  )}>
+                                      {showComparison && (
+                                        <div className="border-r-2 h-[600px] bg-muted/10 overflow-hidden relative">
+                                          <div className="absolute top-4 left-4 z-10"><Badge className="bg-muted text-muted-foreground font-black uppercase text-[9px]">Original Input</Badge></div>
+                                          <div className="h-full overflow-auto p-10 font-mono text-[10px] opacity-40 leading-relaxed whitespace-pre-wrap">
+                                            {resumeValue}
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div className={cn(
+                                        "h-[600px] overflow-hidden relative group/preview transition-all duration-500",
+                                        isSpellChecked ? "ring-2 ring-green-500 ring-inset" : ""
+                                      )}>
+                                          <div className="absolute top-4 right-4 z-10"><Badge className="bg-primary/20 text-primary font-black uppercase text-[9px] border-none">Optimized Version</Badge></div>
+                                          {isEditMode ? (
+                                            <Textarea className="h-full w-full font-mono text-[11px] p-10 resize-none border-none focus-visible:ring-0 leading-relaxed bg-muted/5 selection:bg-primary/20" value={editText} onChange={(e) => { setEditText(e.target.value); setOptimizedResumeText(e.target.value); }} />
+                                          ) : (
+                                            <div className="h-full w-full overflow-auto p-12 font-mono text-[11px] leading-relaxed selection:bg-primary selection:text-white whitespace-pre-wrap">
+                                              {renderTrackedResume(optimizedResumeText)}
+                                            </div>
+                                          )}
+                                      </div>
+                                  </div>
+
+                                  <div className="p-10 border-t bg-muted/5">
+                                      <div className="space-y-4">
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 items-center">
+                                          <Button size="sm" variant={isEditMode ? "secondary" : "outline"} onClick={() => setIsEditMode(!isEditMode)} className="h-10 font-black uppercase text-[9px] tracking-widest px-4 shadow-md border-2">
+                                            {isEditMode ? <Check className="h-4 w-4 mr-2" /> : <Edit3 className="h-4 w-4 mr-2" />} 
+                                            {isEditMode ? "Confirm Changes" : "MANUAL EDIT"}
+                                          </Button>
+                                          
+                                          <Button 
+                                            size="sm" 
+                                            variant="outline" 
+                                            onClick={handlePolish}
+                                            disabled={isPolishing || isLoading}
+                                            className="h-10 font-black uppercase text-[9px] tracking-widest px-4 border-2 hover:border-primary transition-all shadow-md"
+                                          >
+                                            {isPolishing ? <Loader2 className="h-4 w-4 animate-spin mr-2"/> : <Sparkles className="h-4 w-4 mr-2 text-yellow-500 fill-yellow-500"/>}
+                                            AI POLISH
+                                          </Button>
+
+                                          <Button 
+                                            size="sm" 
+                                            variant="outline" 
+                                            onClick={handleSpellCheck}
+                                            disabled={isSpellChecking || isLoading}
+                                            className="h-10 font-black uppercase text-[9px] tracking-widest px-4 border-2 hover:border-primary transition-all shadow-md"
+                                          >
+                                            {isSpellChecking ? <Loader2 className="h-4 w-4 animate-spin mr-2"/> : <CheckCircle2 className="h-4 w-4 mr-2 text-green-600"/>}
+                                            SPELL CHECK
+                                          </Button>
+
+                                          <div className="flex h-10">
+                                            <Button onClick={() => downloadResumeAsPdf(optimizedResumeText, analysis?.atsPreview?.legalFirstName || 'Candidate', jobTitleValue)} className="flex-1 rounded-r-none h-full font-black uppercase text-[9px] tracking-widest px-4 shadow-xl text-primary-foreground"><Download className="h-4 w-4 mr-2"/> Export</Button>
+                                            <DropdownMenu>
+                                                <DropdownMenuTrigger asChild><Button className="rounded-l-none border-l border-primary-foreground/20 px-3 h-full shadow-xl text-primary-foreground"><ChevronDown className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                                                <DropdownMenuContent align="end" className="font-black uppercase text-[9px] tracking-widest min-w-[140px] p-2 border-2">
+                                                  <DropdownMenuItem onClick={() => downloadResumeAsPdf(optimizedResumeText, analysis?.atsPreview?.legalFirstName || 'Candidate', jobTitleValue)} className="py-2">Download PDF</DropdownMenuItem>
+                                                  <DropdownMenuItem onClick={() => downloadResumeAsDocx(optimizedResumeText, analysis?.atsPreview?.legalFirstName || 'Candidate', jobTitleValue)} className="py-2">Download DOCX</DropdownMenuItem>
+                                                </DropdownMenuContent>
+                                            </DropdownMenu>
+                                          </div>
+                                        </div>
+
+                                        <Button 
+                                          onClick={handleGenerateCoverLetter} 
+                                          disabled={isGeneratingCoverLetter || isLoading} 
+                                          className="w-full h-12 font-black uppercase text-[10px] tracking-[0.2em] shadow-xl transition-all hover:scale-[1.01] active:scale-95 gap-2"
+                                        >
+                                          {isGeneratingCoverLetter ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                                          GENERATE A COVER LETTER (.DOCX)
+                                        </Button>
+                                      </div>
+                                  </div>
+                              </CardContent>
+                          </Card>
+                      )}
+
+                      <div className="relative">
+                          <KeywordChecklist 
+                              foundKeywords={analysis?.foundKeywords || []}
+                              supportedKeywords={analysis?.supportedKeywords || []}
+                              unsupportedKeywords={analysis?.unsupportedKeywords || []}
+                              matchPercentage={analysis?.matchPercentage || 0}
+                              onIntegrateSupported={handleIntegrateSupported}
+                              isIntegratingSupported={isRescoring}
+                              onAutoFillMissing={handleAutoFillMissing}
+                              isAutoFillingMissing={isRescoring}
+                              scoreBreakdown={analysis?.fullScore?.scoreBreakdown}
+                              penalties={analysis?.fullScore?.penalties}
+                              onFixLongBullets={handleFixLongBullets}
+                              onFixLayout={handleFixLayout}
+                              onFixContact={handleFixContact}
+                              isActionsDisabled={!optimizedResumeText || isLoading}
+                          />
+                          <InfoTooltip text="A detailed breakdown of how your resume aligns with the job requirements across five key dimensions." className="top-6 right-6" />
+                      </div>
+                  </>
+              )}
+          </div>
+        </div>
+      </div>
+      
+      {mounted && (
+        <div className="fixed bottom-6 right-6 z-[9999] pointer-events-auto">
+          <CounselorChat 
+            resumeText={optimizedResumeText || resumeValue}
+            jobDescription={jobDescValue}
+            onResumeUpdate={(newResume) => {
+              setOptimizedResumeText(newResume);
+              setEditText(newResume);
+              setResult(prev => ({ ...(prev || {}), optimizedResumeText: newResume }));
+            }}
+            chatAction={actions.counselorChat}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
